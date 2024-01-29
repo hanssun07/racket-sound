@@ -1,0 +1,88 @@
+#lang racket/base
+
+(require
+    (for-syntax racket/base)
+    racket/match racket/pretty racket/list
+    rsound rsound/piano-tones
+    gregor)
+
+(define-syntax-rule
+    (define-match-pattern (a . b) c)
+    (define-match-expander a
+        (lambda (stx) (syntax-case stx () [(_ . b) #'c]))))
+(define-match-pattern (datetime/m y M d h m s ns)
+    (and (? datetime-provider?)
+         (app ->year        y)
+         (app ->month       M)
+         (app ->day         d)
+         (app ->hours       h)
+         (app ->minutes     m)
+         (app ->seconds     s)
+         (app ->nanoseconds ns)))
+
+(define (5min-block-of [dt (now)])
+    (match-define (datetime/m y M d h m _ _) dt)
+    (datetime y M d h (- m (remainder m 5)) 0 0))
+(define (next-5min-datetime [dt (now)])
+    (+minutes (5min-block-of dt) 5))
+
+(define (time->pitch-offsets [dt (now)])
+    (define dtb (5min-block-of dt))
+    (match-define (datetime/m _ _ _ H+ M+ _ _) dtb)
+    (match-define (datetime/m _ _ _ H- M- _ _) (-minutes (5min-block-of dtb) 5))
+    (define h+ (remainder H+ 12))
+    (define h- (remainder H- 12))
+    (define m+ (quotient M+ 5))
+    (define m- (quotient M- 5))
+    (if (zero? m+)
+        (list (list 0 h- (+ h- m-)) (list 0 h+ (+ h+ m+)))
+        (list (list 0 h+ (+ h+ m+)))))
+
+(define (tone-splice specs)
+    (if (empty? specs) (silence 1)
+        (assemble (map (lambda (spec)
+                        (match-define (list sound start end) spec)
+                        (list (clip sound 0 (min (rsound-stop sound) (s->f (- end start))))
+                              (s->f start)))
+                       specs))))
+(define (s->f d) (floor (* d (default-sample-rate))))
+(define (pitch-offset-set->chord pos)
+    (define (offset->sound o) (piano-tone (+ 60 o)))
+    (define sounds (map offset->sound pos))
+    (define times (append (build-list (length pos) (lambda (i) (* i 1/4))) '(5)))
+    (define spec (for/list ([sound sounds] [start times] [end (cdr times)])
+        (list sound start end)))
+    (define seq (tone-splice spec))
+    ;(define seq (assemble (map list sounds (build-list (length pos) (lambda (i) (s->f (* i 1/4)))))))
+    seq)
+(define (pitch-offset-seq->chord poss)
+    (define chords (map pitch-offset-set->chord poss))
+    (define times (append (build-list (length poss) values) '(10)))
+    (define spec (for/list ([sound chords] [start times] [end (cdr times)])
+        (list sound start end)))
+    (define seq (tone-splice spec))
+    seq)
+
+(define pstream (make-pstream #:buffer-time 0.9))
+(define (play-time-notif [dt (now)])
+    (define rposs (time->pitch-offsets dt))
+    (define poss `((0 0) ,@rposs ,@rposs))
+    (define tone (pitch-offset-seq->chord poss))
+    (displayln (list poss tone))
+    (pstream-play pstream tone))
+    
+
+
+(next-5min-datetime)
+(define test-data (let loop ([dt (now)] [i 5])
+    (if (zero? i) '()
+        (cons (time->pitch-offsets dt)
+              (loop (next-5min-datetime dt) (sub1 i))))))
+(pretty-print test-data)
+
+(let loop ([dt (now)] [i 20])
+    (if (zero? i) '()
+        (void (play-time-notif dt)
+              (sleep 3)
+              (loop (next-5min-datetime dt) (sub1 i)))))
+(sleep 3)
