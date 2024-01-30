@@ -2,7 +2,7 @@
 
 (require
     (for-syntax racket/base)
-    racket/match racket/pretty racket/list
+    racket/match racket/pretty racket/list racket/math
     rsound rsound/piano-tones
     gregor)
 
@@ -39,12 +39,21 @@
 
 (define current-bpm (make-parameter 60))
 (define (beat-frames) (* 60 (/ (default-sample-rate) (current-bpm))))
+(beat-frames)
 
 (define (b->f d) (floor (* d (beat-frames))))
 (define (rs-splice sound start-beat end-beat)
     (clip sound
           (max (rsound-start sound) (b->f start-beat))
           (min (rsound-stop sound)  (b->f end-beat))))
+#| for smooth clipping
+(define k 1.0) (for ([i (rsound-stop p)])
+    (when (> i 44100)
+      (set! k (* k #i0.999))
+      (s16vector-set! (~> p rsound-data) (* i 2) (exact-truncate (* k (s16vector-ref (~> p rsound-data) (* i 2)))))
+      (s16vector-set! (~> p rsound-data) (add1 (* i 2)) (exact-truncate (* k (s16vector-ref (~> p rsound-data) (add1
+(* i 2))))))))
+|#
 (define r-rest (silence 1))
 (define (dbg k) (pretty-print k) k)
 (define (melody-splice spec)
@@ -56,8 +65,7 @@
                        (list (rs-splice sound 0 (- end start))
                              (b->f start)))))))
         
-(define pstream (make-pstream #:buffer-time 0.9))
-(define (play-time-notif [dt (now)])
+(define (time->sound [dt (now)])
     (define rposs (time->pitch-offsets dt))
     (define part-specs (for/list ([offsets rposs])
         (define notes (apply append (for/list ([offset offsets]) (list 0 offset))))
@@ -74,6 +82,11 @@
         ,@post-spec))
     (displayln spec)
     (define tone (parameterize ([current-bpm 240]) (melody-splice spec)))
+    tone)
+(define pstream (make-pstream #:buffer-time 0.9))
+(define (play-time-notif [dt (now)])
+    (define tone (time->sound dt))
+    (collect-garbage)
     (pstream-play pstream tone))
     
 (let loop ([last-block (now)])
